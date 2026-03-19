@@ -2,8 +2,11 @@
   "ExpandedNodes": [
     "",
     "\\src",
-    "\\target\\debug"
+    "\\src\\behavior",
+    "\\src\\intent",
+    "\\src\\patterns",
+    "\\src\\sensors",
+    "\\target"
   ],
-  "SelectedNode": "\\.gitignore",
   "PreviewInSolutionExplorer": false
 }

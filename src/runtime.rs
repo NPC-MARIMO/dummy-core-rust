@@ -1,7 +1,4 @@
-// src/runtime.rs
-// FULL REPLACEMENT
-
-use anyhow::Result;
+﻿use anyhow::Result;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use tokio::time::{interval, Duration};
@@ -39,23 +36,15 @@ pub async fn run() -> Result<()> {
 
     let mut tasks: Vec<JoinHandle<()>> = Vec::new();
 
-    tasks.push(tokio::spawn(scheduler::heartbeat_loop(state.clone())));
+    // ✅ REAL INPUT WITH SHUTDOWN CONTROL
     tasks.push(tokio::spawn(
-        sensors::simulation::mode_rotation_loop(state.clone()),
+        sensors::input::run_input(state.clone(), sensor_tx.clone()),
     ));
 
-    tasks.push(tokio::spawn(sensors::window::run(
-        state.clone(),
-        sensor_tx.clone(),
-    )));
-    tasks.push(tokio::spawn(sensors::keyboard::run(
-        state.clone(),
-        sensor_tx.clone(),
-    )));
-    tasks.push(tokio::spawn(sensors::mouse::run(
-        state.clone(),
-        sensor_tx.clone(),
-    )));
+    // heartbeat
+    tasks.push(tokio::spawn(
+        scheduler::heartbeat_loop(state.clone())
+    ));
 
     drop(sensor_tx);
 
@@ -92,10 +81,10 @@ pub async fn run() -> Result<()> {
 
                             let patterns = pattern_engine.process(&event);
 
-                          for p in patterns {
-                            let _ = pattern_sender.send(p.clone()).await;
-                            let _ = pattern_log_sender.send(p).await;
-}
+                            for p in patterns {
+                                let _ = pattern_sender.send(p.clone()).await;
+                                let _ = pattern_log_sender.send(p).await;
+                            }
 
                             behavior_engine.process(&event);
                         }
@@ -113,14 +102,14 @@ pub async fn run() -> Result<()> {
     drop(behavior_tx);
     drop(behavior_log_tx);
 
-    // intent engine task
+    // intent engine
     let intent_task = tokio::spawn(intent_engine::run(
         pattern_rx_for_intent,
         behavior_rx_for_intent,
         intent_tx,
     ));
 
-    // loggers
+    // pattern logger
     let pattern_logger = tokio::spawn(async move {
         while let Some(p) = pattern_log_rx.recv().await {
             tracing::info!(?p, "pattern_event");
@@ -128,6 +117,7 @@ pub async fn run() -> Result<()> {
         info!("pattern logger ended");
     });
 
+    // behavior logger
     let behavior_logger = tokio::spawn(async move {
         while let Some(b) = behavior_log_rx.recv().await {
             tracing::info!(?b, "behavior_snapshot");
@@ -135,6 +125,7 @@ pub async fn run() -> Result<()> {
         info!("behavior logger ended");
     });
 
+    // intent logger
     let intent_logger = tokio::spawn(async move {
         while let Some(i) = intent_rx.recv().await {
             tracing::info!(
@@ -146,6 +137,7 @@ pub async fn run() -> Result<()> {
         info!("intent logger ended");
     });
 
+    // shutdown
     tokio::signal::ctrl_c().await?;
     warn!("Ctrl+C received, initiating graceful shutdown");
 
@@ -169,12 +161,11 @@ pub async fn run() -> Result<()> {
         info!(
             heartbeat_count = s.heartbeat_count,
             total_events = s.total_events,
-            mode = ?s.simulation_mode,
             "shutdown summary"
         );
     }
 
     info!("Astra Core shutdown complete");
 
-    std::process::exit(0);
+    Ok(())
 }

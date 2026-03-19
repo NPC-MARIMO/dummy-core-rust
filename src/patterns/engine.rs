@@ -1,31 +1,15 @@
-// src/patterns/engine.rs
-
 use tokio::time::{Duration, Instant};
 
 use crate::patterns::event::PatternEvent;
 use crate::sensors::event::SensorEvent;
 
-/// Layer 5 Pattern Engine
-///
-/// Stateful deterministic stream processor.
-/// Owns all rolling buffers and time-window logic.
-///
-/// Rules implemented:
-/// - RepeatedWindowTitle (>=3 in 10s)
-/// - HighBackspaceRate (>0.3 in 5s)
-/// - TypingBurst (>20 key events in 2s)
-/// - WindowInstability (>5 window changes in 30s)
 pub struct PatternEngine {
-    // recent window titles (time bounded)
     pub recent_window_titles: Vec<(Instant, String)>,
 
-    // recent key events (time bounded)
     pub recent_key_events: Vec<(Instant, SensorEvent)>,
 
-    // last window change timestamp
     pub last_window_change: Option<Instant>,
 
-    // rolling window change timestamps
     window_change_times: Vec<Instant>,
     high_backspace_active: bool,
     typing_burst_active: bool,
@@ -187,7 +171,7 @@ impl PatternEngine {
 fn clone_key(event: &SensorEvent) -> SensorEvent {
     match event {
         SensorEvent::KeyPressed { key } => {
-            SensorEvent::KeyPressed { key: *key }
+            SensorEvent::KeyPressed { key: key.clone() }
         }
         SensorEvent::KeyBackspace => SensorEvent::KeyBackspace,
         _ => unreachable!(),

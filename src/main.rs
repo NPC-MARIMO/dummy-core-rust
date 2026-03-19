@@ -1,6 +1,4 @@
-﻿// src/main.rs
-
-mod runtime;
+﻿mod runtime;
 mod scheduler;
 mod state;
 mod sensors;
