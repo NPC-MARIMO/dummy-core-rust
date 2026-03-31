@@ -1,5 +1,3 @@
-// src/state.rs
-
 use std::sync::{Arc, Mutex};
 
 #[derive(Debug, Clone, Copy)]

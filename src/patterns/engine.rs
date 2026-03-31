@@ -34,7 +34,7 @@ impl PatternEngine {
         let mut out = Vec::new();
 
         match event {
-            SensorEvent::WindowChanged { title } => {
+            SensorEvent::WindowChanged { title, .. } => {
                 self.handle_window(now, title, &mut out);
             }
 

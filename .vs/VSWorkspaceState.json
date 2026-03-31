@@ -5,8 +5,7 @@
     "\\src\\behavior",
     "\\src\\intent",
     "\\src\\patterns",
-    "\\src\\sensors",
-    "\\target"
+    "\\src\\sensors"
   ],
   "PreviewInSolutionExplorer": false
 }

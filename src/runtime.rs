@@ -3,7 +3,6 @@ use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use tokio::time::{interval, Duration};
 use tracing::{info, warn};
-
 use crate::behavior::engine::BehaviorEngine;
 use crate::behavior::snapshot::BehaviorSnapshot;
 use crate::intent::engine as intent_engine;
@@ -12,7 +11,7 @@ use crate::patterns::engine::PatternEngine;
 use crate::patterns::event::PatternEvent;
 use crate::scheduler;
 use crate::state::create_state;
-use crate::sensors::{self, event::SensorEvent};
+use crate::sensors::{self, event::SensorEvent}; 
 
 pub async fn run() -> Result<()> {
     info!("Astra Core starting up");
