@@ -1,8 +1,8 @@
 ﻿use anyhow::Result;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
-use tokio::time::{interval, Duration};
 use tracing::{info, warn};
+
 use crate::behavior::engine::BehaviorEngine;
 use crate::behavior::snapshot::BehaviorSnapshot;
 use crate::intent::engine as intent_engine;
@@ -11,7 +11,7 @@ use crate::patterns::engine::PatternEngine;
 use crate::patterns::event::PatternEvent;
 use crate::scheduler;
 use crate::state::create_state;
-use crate::sensors::{self, event::SensorEvent}; 
+use crate::sensors::{self, event::SensorEvent};
 
 pub async fn run() -> Result<()> {
     info!("Astra Core starting up");
@@ -20,13 +20,18 @@ pub async fn run() -> Result<()> {
 
     let (sensor_tx, mut sensor_rx) = mpsc::channel::<SensorEvent>(512);
 
+    let (behavior_sensor_tx, behavior_sensor_rx) =
+        mpsc::channel::<SensorEvent>(512);
+
     let (pattern_tx, pattern_rx_for_intent) =
         mpsc::channel::<PatternEvent>(256);
+
     let (pattern_log_tx, mut pattern_log_rx) =
         mpsc::channel::<PatternEvent>(256);
 
     let (behavior_tx, behavior_rx_for_intent) =
         mpsc::channel::<BehaviorSnapshot>(128);
+
     let (behavior_log_tx, mut behavior_log_rx) =
         mpsc::channel::<BehaviorSnapshot>(128);
 
@@ -35,61 +40,39 @@ pub async fn run() -> Result<()> {
 
     let mut tasks: Vec<JoinHandle<()>> = Vec::new();
 
-    // ✅ REAL INPUT WITH SHUTDOWN CONTROL
     tasks.push(tokio::spawn(
         sensors::input::run_input(state.clone(), sensor_tx.clone()),
     ));
 
-    // heartbeat
     tasks.push(tokio::spawn(
         scheduler::heartbeat_loop(state.clone())
     ));
 
     drop(sensor_tx);
 
-    // collector
     let collector_state = state.clone();
     let pattern_sender = pattern_tx.clone();
     let pattern_log_sender = pattern_log_tx.clone();
-    let behavior_sender = behavior_tx.clone();
-    let behavior_log_sender = behavior_log_tx.clone();
+    let behavior_sensor_sender = behavior_sensor_tx.clone();
 
     let collector = tokio::spawn(async move {
         let mut pattern_engine = PatternEngine::new();
-        let mut behavior_engine = BehaviorEngine::new();
-        let mut tick = interval(Duration::from_secs(3));
 
-        loop {
-            tokio::select! {
-                _ = tick.tick() => {
-                    let snap = behavior_engine.compute_snapshot();
+        while let Some(event) = sensor_rx.recv().await {
+            {
+                let mut s = collector_state.lock().unwrap();
+                s.total_events += 1;
+            }
 
-                    let _ = behavior_sender.send(snap).await;
-                    let _ = behavior_log_sender.send(snap).await;
-                }
+            tracing::info!(?event, "sensor_event");
 
-                maybe_event = sensor_rx.recv() => {
-                    match maybe_event {
-                        Some(event) => {
-                            {
-                                let mut s = collector_state.lock().unwrap();
-                                s.total_events += 1;
-                            }
+            let _ = behavior_sensor_sender.send(event.clone()).await;
 
-                            tracing::info!(?event, "sensor_event");
+            let patterns = pattern_engine.process(&event);
 
-                            let patterns = pattern_engine.process(&event);
-
-                            for p in patterns {
-                                let _ = pattern_sender.send(p.clone()).await;
-                                let _ = pattern_log_sender.send(p).await;
-                            }
-
-                            behavior_engine.process(&event);
-                        }
-                        None => break,
-                    }
-                }
+            for p in patterns {
+                let _ = pattern_sender.send(p.clone()).await;
+                let _ = pattern_log_sender.send(p).await;
             }
         }
 
@@ -98,17 +81,24 @@ pub async fn run() -> Result<()> {
 
     drop(pattern_tx);
     drop(pattern_log_tx);
-    drop(behavior_tx);
-    drop(behavior_log_tx);
+    drop(behavior_sensor_tx);
 
-    // intent engine
+    let behavior_task = tokio::spawn(async move {
+        let engine = BehaviorEngine::new(
+            behavior_sensor_rx,
+            behavior_tx,
+        );
+        engine.run().await;
+    });
+
+    //drop(behavior_tx);//
+
     let intent_task = tokio::spawn(intent_engine::run(
         pattern_rx_for_intent,
         behavior_rx_for_intent,
         intent_tx,
     ));
 
-    // pattern logger
     let pattern_logger = tokio::spawn(async move {
         while let Some(p) = pattern_log_rx.recv().await {
             tracing::info!(?p, "pattern_event");
@@ -116,7 +106,6 @@ pub async fn run() -> Result<()> {
         info!("pattern logger ended");
     });
 
-    // behavior logger
     let behavior_logger = tokio::spawn(async move {
         while let Some(b) = behavior_log_rx.recv().await {
             tracing::info!(?b, "behavior_snapshot");
@@ -124,7 +113,6 @@ pub async fn run() -> Result<()> {
         info!("behavior logger ended");
     });
 
-    // intent logger
     let intent_logger = tokio::spawn(async move {
         while let Some(i) = intent_rx.recv().await {
             tracing::info!(
@@ -136,7 +124,6 @@ pub async fn run() -> Result<()> {
         info!("intent logger ended");
     });
 
-    // shutdown
     tokio::signal::ctrl_c().await?;
     warn!("Ctrl+C received, initiating graceful shutdown");
 
@@ -150,6 +137,7 @@ pub async fn run() -> Result<()> {
     }
 
     let _ = collector.await;
+    let _ = behavior_task.await;
     let _ = intent_task.await;
     let _ = pattern_logger.await;
     let _ = behavior_logger.await;

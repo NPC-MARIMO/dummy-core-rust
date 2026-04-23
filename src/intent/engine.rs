@@ -1,15 +1,3 @@
-// src/intent/engine.rs
-//
-// FULL FIXED VERSION
-// - UTF-8 safe
-// - stable intent switching
-// - score decay
-// - correct activity tracking
-// - absolute activation threshold (no EMA self-comparison bug)
-// - smoothing + dwell time
-//
-// DROP-IN REPLACEMENT
-
 use std::collections::VecDeque;
 
 use tokio::sync::mpsc;
@@ -98,34 +86,34 @@ impl IntentEngine {
         // ---------- behavior signals ----------
 
         // typing speed
-        if b.typing_speed_cps > 6.0 {
+        if b.typing_speed > 6.0 {
             coding += 1.2;
-        } else if b.typing_speed_cps > 2.0 {
+        } else if b.typing_speed > 2.0 {
             coding += 0.6;
-        } else if b.typing_speed_cps < 0.5 {
+        } else if b.typing_speed < 0.5 {
             reading += 0.8;
             idle += 0.4;
         }
 
         // backspace ratio
-        if b.backspace_ratio > 0.3 {
+        if b.backspace_rate > 0.3 {
             debugging += 1.4;
-        } else if b.backspace_ratio < 0.1 {
+        } else if b.backspace_rate < 0.1 {
             coding += 0.8;
         }
 
         // window change rate
-        if b.window_change_rate > 10.0 {
+        if b.window_switch_rate > 10.0 {
             debugging += 1.0;
-        } else if b.window_change_rate < 4.0 {
+        } else if b.window_switch_rate < 4.0 {
             coding += 0.6;
             reading += 0.5;
         }
 
         // mouse variance
-        if b.mouse_velocity_variance > 800.0 {
+        if b.mouse_speed > 800.0 {
             debugging += 0.5;
-        } else if b.mouse_velocity_variance < 150.0 {
+        } else if b.mouse_speed < 150.0 {
             reading += 0.6;
             idle += 0.5;
         }

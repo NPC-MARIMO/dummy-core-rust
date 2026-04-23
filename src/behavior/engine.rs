@@ -1,163 +1,85 @@
-// src/behavior/engine.rs
-// CLEAN UTF-8 SAFE VERSION
+use std::time::{Duration, Instant};
 
-use tokio::time::{Duration, Instant};
+use tokio::sync::mpsc::{Receiver, Sender};
+use tokio::time::interval;
 
+use crate::behavior::event_adapter::EventAdapter; // FIXED IMPORT
+use crate::behavior::metrics::Metrics;
+use crate::behavior::smoothing::ExpSmoother;
 use crate::behavior::snapshot::BehaviorSnapshot;
+use crate::behavior::window::SlidingWindow;
 use crate::sensors::event::SensorEvent;
 
 pub struct BehaviorEngine {
-    // (timestamp, is_backspace)
-    key_events: Vec<(Instant, bool)>,
+    rx: Receiver<SensorEvent>,
+    snapshot_tx: Sender<BehaviorSnapshot>,
 
-    // window change timestamps
-    window_events: Vec<Instant>,
+    window_5s: SlidingWindow,
+    window_10s: SlidingWindow,
 
-    // (timestamp, x, y)
-    mouse_positions: Vec<(Instant, i32, i32)>,
+    typing_smoother: ExpSmoother,
+    backspace_smoother: ExpSmoother,
+    mouse_smoother: ExpSmoother,
+    scroll_smoother: ExpSmoother,
+    window_switch_smoother: ExpSmoother,
 }
 
 impl BehaviorEngine {
-    pub fn new() -> Self {
+    pub fn new(
+        rx: Receiver<SensorEvent>,
+        snapshot_tx: Sender<BehaviorSnapshot>,
+    ) -> Self {
         Self {
-            key_events: Vec::new(),
-            window_events: Vec::new(),
-            mouse_positions: Vec::new(),
+            rx,
+            snapshot_tx,
+
+            window_5s: SlidingWindow::new(Duration::from_secs(5)),
+            window_10s: SlidingWindow::new(Duration::from_secs(10)),
+
+            typing_smoother: ExpSmoother::new(0.3),
+            backspace_smoother: ExpSmoother::new(0.3),
+            mouse_smoother: ExpSmoother::new(0.3),
+            scroll_smoother: ExpSmoother::new(0.3),
+            window_switch_smoother: ExpSmoother::new(0.3),
         }
     }
 
-    pub fn process(&mut self, event: &SensorEvent) {
-        let now = Instant::now();
+    pub async fn run(mut self) {
+        let mut ticker = interval(Duration::from_millis(200));
 
-        match event {
-            SensorEvent::KeyPressed { .. } => {
-                self.key_events.push((now, false));
-            }
-            SensorEvent::KeyBackspace => {
-                self.key_events.push((now, true));
-            }
-            SensorEvent::WindowChanged { .. } => {
-                self.window_events.push(now);
-            }
-            SensorEvent::MouseMoved { x, y } => {
-                self.mouse_positions.push((now, *x, *y));
-            }
-            _ => {}
-        }
-    }
+        // ✅ MUST be outside loop (stateful)
+        let mut adapter = EventAdapter::new();
 
-    pub fn compute_snapshot(&mut self) -> BehaviorSnapshot {
-        let now = Instant::now();
+        loop {
+            tokio::select! {
+                Some(event) = self.rx.recv() => {
 
-        self.prune(now);
+                    // ✅ Correct conversion
+                    if let Some(behavior_event) = adapter.convert(event) {
+                        self.window_5s.push(behavior_event.clone());
+                        self.window_10s.push(behavior_event);
+                    }
+                }
 
-        BehaviorSnapshot {
-            typing_speed_cps: self.typing_speed(now),
-            backspace_ratio: self.backspace_ratio(now),
-            window_change_rate: self.window_change_rate(now),
-            mouse_velocity_variance: self.mouse_velocity_variance(now),
-        }
-    }
-
-    fn prune(&mut self, now: Instant) {
-        self.key_events
-            .retain(|(t, _)| now.duration_since(*t) <= Duration::from_secs(5));
-
-        self.window_events
-            .retain(|t| now.duration_since(*t) <= Duration::from_secs(30));
-
-        self.mouse_positions
-            .retain(|(t, _, _)| now.duration_since(*t) <= Duration::from_secs(5));
-    }
-
-    fn typing_speed(&self, now: Instant) -> f32 {
-        let count = self
-            .key_events
-            .iter()
-            .filter(|(t, backspace)| {
-                !*backspace
-                    && now.duration_since(*t) <= Duration::from_secs(3)
-            })
-            .count();
-
-        count as f32 / 3.0
-    }
-
-    fn backspace_ratio(&self, now: Instant) -> f32 {
-        let mut total = 0usize;
-        let mut backspaces = 0usize;
-
-        for (t, is_backspace) in &self.key_events {
-            if now.duration_since(*t) <= Duration::from_secs(5) {
-                total += 1;
-                if *is_backspace {
-                    backspaces += 1;
+                _ = ticker.tick() => {
+                    self.process_tick();
                 }
             }
         }
-
-        if total == 0 {
-            0.0
-        } else {
-            backspaces as f32 / total as f32
-        }
     }
 
-    fn window_change_rate(&self, now: Instant) -> f32 {
-        let count = self
-            .window_events
-            .iter()
-            .filter(|t| now.duration_since(**t) <= Duration::from_secs(30))
-            .count();
+    fn process_tick(&mut self) {
+        let metrics = Metrics::from_window(&self.window_5s);
 
-        (count as f32 / 30.0) * 60.0
-    }
+        let snapshot = BehaviorSnapshot {
+            typing_speed: self.typing_smoother.update(metrics.typing_speed),
+            backspace_rate: self.backspace_smoother.update(metrics.backspace_rate),
+            mouse_speed: self.mouse_smoother.update(metrics.mouse_speed),
+            scroll_rate: self.scroll_smoother.update(metrics.scroll_rate),
+            window_switch_rate: self.window_switch_smoother.update(metrics.window_switch_rate),
+            timestamp: Instant::now(),
+        };
 
-    fn mouse_velocity_variance(&self, now: Instant) -> f32 {
-        let points: Vec<_> = self
-            .mouse_positions
-            .iter()
-            .filter(|(t, _, _)| {
-                now.duration_since(*t) <= Duration::from_secs(5)
-            })
-            .collect();
-
-        if points.len() < 2 {
-            return 0.0;
-        }
-
-        let mut velocities = Vec::with_capacity(points.len() - 1);
-
-        for pair in points.windows(2) {
-            let (t1, x1, y1) = *pair[0];
-            let (t2, x2, y2) = *pair[1];
-
-            let dt = t2.duration_since(t1).as_secs_f32();
-            if dt <= 0.0 {
-                continue;
-            }
-
-            let dx = (x2 - x1) as f32;
-            let dy = (y2 - y1) as f32;
-            let dist = (dx * dx + dy * dy).sqrt();
-
-            velocities.push(dist / dt);
-        }
-
-        if velocities.len() < 2 {
-            return 0.0;
-        }
-
-        let mean =
-            velocities.iter().sum::<f32>() / velocities.len() as f32;
-
-        let mut var_sum = 0.0;
-
-        for v in &velocities {
-            let d = *v - mean;
-            var_sum += d * d;
-        }
-
-        var_sum / velocities.len() as f32
+        let _ = self.snapshot_tx.try_send(snapshot);
     }
 }
